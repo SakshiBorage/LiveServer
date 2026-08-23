@@ -23,13 +23,14 @@ def handle_issue_created(payload: dict) -> None:
 
     Currently just logs + saves the raw payload so we can inspect its shape.
     """
-    issue = payload.get("issue", {})
+    issue = payload.get("issue", payload if "key" in payload else {})
     fields = issue.get("fields", {})
     print(
         f"[issue created] key={issue.get('key')} "
         f"summary={fields.get('summary')!r} "
         f"event={payload.get('webhookEvent')}"
     )
+    print(json.dumps(payload, indent=2))
     saved_path = save_payload(payload)
     print(f"  saved payload -> {saved_path}")
 
