@@ -96,7 +96,8 @@ def get_access_token() -> Optional[str]:
         headers["X-API-Key"] = AUTH_API_KEY
     req = urllib.request.Request(AUTH_TOKEN_URL, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode())["access_token"]
+        token_response = json.loads(resp.read().decode())
+    return token_response["access_token"]
 
 
 def build_multipart(fields: dict[str, str]) -> tuple[bytes, str]:
