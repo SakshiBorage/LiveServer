@@ -17,7 +17,6 @@ app = Flask(__name__)
 PAYLOAD_DIR = os.path.join(os.path.dirname(__file__), "payloads")
 os.makedirs(PAYLOAD_DIR, exist_ok=True)
 
-APPROVED_STATUS = os.environ.get("JIRA_APPROVED_STATUS", "Approved")
 AGENT_RUN_API_BASE_URL = os.environ.get("AGENT_RUN_API_BASE_URL", "")
 AGENT_ID = os.environ.get("AGENT_ID", "")
 AGENT_NAME = os.environ.get("AGENT_NAME", "")
@@ -59,24 +58,6 @@ def build_agent_params(issue: dict) -> dict:
     description = adf_to_text(fields.get("description", ""))
     raw_text = "\n\n".join(part for part in (summary, description) if part).strip()
     return {"ticket_key": issue.get("key"), "raw_text": raw_text}
-
-
-def get_transition_status(data: dict[str, Any]) -> str:
-    """Extract the destination status name from any Jira webhook payload shape."""
-    # Automation "Send web request" custom body
-    transition = data.get("transition") or {}
-    if transition.get("to_status"):
-        return transition["to_status"]
-
-    # Native Jira webhook: status change recorded in changelog
-    for item in (data.get("changelog") or {}).get("items", []):
-        if item.get("field") == "status" and item.get("toString"):
-            return item["toString"]
-
-    # "Issue data" webhook body: current status reflects the just-completed transition
-    issue = data.get("issue") or (data if "fields" in data else {})
-    status = (issue.get("fields") or {}).get("status") or {}
-    return status.get("name", "")
 
 
 def get_access_token() -> Optional[str]:
@@ -157,19 +138,11 @@ def call_agent(issue: dict) -> None:
 def handle_webhook(payload: dict) -> None:
     issue = payload.get("issue", payload if "key" in payload else {})
     fields = issue.get("fields", {})
-    transition_status = get_transition_status(payload)
 
-    print(
-        f"[webhook] key={issue.get('key')} summary={fields.get('summary')!r} "
-        f"transition_status={transition_status!r}"
-    )
+    print(f"[webhook] key={issue.get('key')} summary={fields.get('summary')!r}")
     print(json.dumps(payload, indent=2))
     saved_path = save_payload(payload)
     print(f"  saved payload -> {saved_path}")
-
-    if transition_status.lower() != APPROVED_STATUS.lower():
-        print(f"[webhook] ignoring — status {transition_status!r} != {APPROVED_STATUS!r}")
-        return
 
     call_agent(issue)
 
