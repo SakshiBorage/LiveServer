@@ -167,5 +167,20 @@ def jira_webhook():
     return jsonify({"status": "received"}), 200
 
 
+@app.route("/webhook/jira/pr-merged", methods=["POST"])
+def jira_pr_merged_webhook():
+    """Exploration only — log + save the raw payload, no agent call yet.
+
+    Once we see a real PR-merge payload here, we'll know the actual field
+    names Jira sends and can build the PR-number extraction + agent call.
+    """
+    payload = request.get_json(silent=True) or {}
+    print("[pr-merged webhook] payload:")
+    print(json.dumps(payload, indent=2))
+    saved_path = save_payload(payload)
+    print(f"  saved payload -> {saved_path}")
+    return jsonify({"status": "received"}), 200
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
