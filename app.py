@@ -17,14 +17,22 @@ app = Flask(__name__)
 PAYLOAD_DIR = os.path.join(os.path.dirname(__file__), "payloads")
 os.makedirs(PAYLOAD_DIR, exist_ok=True)
 
-AGENT_RUN_API_BASE_URL = os.environ.get("AGENT_RUN_API_BASE_URL", "")
-AGENT_ID = os.environ.get("AGENT_ID", "")
-AGENT_NAME = os.environ.get("AGENT_NAME", "")
-AUTH_TOKEN_URL = os.environ.get("AUTH_TOKEN_URL", "")
-AUTH_CLIENT_ID = os.environ.get("AUTH_CLIENT_ID", "")
-AUTH_CLIENT_SECRET = os.environ.get("AUTH_CLIENT_SECRET", "")
-AUTH_API_KEY = os.environ.get("AUTH_API_KEY", "")
-AUTH_TENANT_ID = os.environ.get("AUTH_TENANT_ID", "")
+USE_TEST_ENV = os.environ.get("USE_TEST_ENV", "false").lower() == "true"
+_ENV_PREFIX = "TEST_" if USE_TEST_ENV else "ASURINT_"
+
+
+def _env(name: str) -> str:
+    return os.environ.get(f"{_ENV_PREFIX}{name}", "")
+
+
+AGENT_RUN_API_BASE_URL = _env("AGENT_RUN_API_BASE_URL")
+AGENT_ID = _env("AGENT_ID")
+AGENT_NAME = _env("AGENT_NAME")
+AUTH_TOKEN_URL = _env("AUTH_TOKEN_URL")
+AUTH_CLIENT_ID = _env("AUTH_CLIENT_ID")
+AUTH_CLIENT_SECRET = _env("AUTH_CLIENT_SECRET")
+AUTH_API_KEY = _env("AUTH_API_KEY")
+AUTH_TENANT_ID = _env("AUTH_TENANT_ID")
 
 
 def save_payload(payload: dict) -> str:
