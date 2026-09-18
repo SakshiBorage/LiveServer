@@ -28,6 +28,8 @@ def _env(name: str) -> str:
 AGENT_RUN_API_BASE_URL = _env("AGENT_RUN_API_BASE_URL")
 AGENT_ID = _env("AGENT_ID")
 AGENT_NAME = _env("AGENT_NAME")
+SCRAPE_PROMOTER_AGENT_ID = _env("SCRAPE_PROMOTER_AGENT_ID")
+SCRAPE_PROMOTER_AGENT_NAME = _env("SCRAPE_PROMOTER_AGENT_NAME")
 AUTH_TOKEN_URL = _env("AUTH_TOKEN_URL")
 AUTH_CLIENT_ID = _env("AUTH_CLIENT_ID")
 AUTH_CLIENT_SECRET = _env("AUTH_CLIENT_SECRET")
@@ -143,6 +145,47 @@ def call_agent(issue: dict) -> None:
         print(f"[call_agent] agent_run_api returned {e.code}: {e.read().decode()}")
 
 
+def call_scrape_promoter_agent(agent_params: dict) -> None:
+    """Trigger the ScrapePromoter agent run. Fully separate from call_agent()
+    so the existing /webhook/jira flow is never touched by this addition.
+
+    Runs in dry-run mode (logs the request instead of sending it) until
+    AGENT_RUN_API_BASE_URL, SCRAPE_PROMOTER_AGENT_ID and
+    SCRAPE_PROMOTER_AGENT_NAME are configured.
+    """
+    fields = {
+        "agent_name": SCRAPE_PROMOTER_AGENT_NAME,
+        "id": SCRAPE_PROMOTER_AGENT_ID,
+        "run_in_sync": "false",
+        "agent_params": json.dumps(agent_params),
+    }
+
+    if not (AGENT_RUN_API_BASE_URL and SCRAPE_PROMOTER_AGENT_ID and SCRAPE_PROMOTER_AGENT_NAME):
+        print("[call_scrape_promoter_agent] DRY RUN (agent API not configured) — would POST:")
+        print(f"  url    = <AGENT_RUN_API_BASE_URL>/api/v1/agent/run")
+        print(f"  fields = {fields}")
+        return
+
+    url = f"{AGENT_RUN_API_BASE_URL}/api/v1/agent/run"
+    body, content_type = build_multipart(fields)
+    headers = {"Content-Type": content_type}
+    if AUTH_TENANT_ID:
+        headers["X-Tenant-ID"] = AUTH_TENANT_ID
+    if AUTH_API_KEY:
+        headers["X-API-Key"] = AUTH_API_KEY
+    token = get_access_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    req = urllib.request.Request(url, method="POST", data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+            print(f"[call_scrape_promoter_agent] agent run created: {result}")
+    except urllib.error.HTTPError as e:
+        print(f"[call_scrape_promoter_agent] agent_run_api returned {e.code}: {e.read().decode()}")
+
+
 def handle_webhook(payload: dict) -> None:
     issue = payload.get("issue", payload if "key" in payload else {})
     fields = issue.get("fields", {})
@@ -169,16 +212,14 @@ def jira_webhook():
 
 @app.route("/webhook/jira/pr-merged", methods=["POST"])
 def jira_pr_merged_webhook():
-    """Exploration only — log + save the raw payload, no agent call yet.
-
-    Once we see a real PR-merge payload here, we'll know the actual field
-    names Jira sends and can build the PR-number extraction + agent call.
+    """Jira's Automation body is already {pr_number, url, ticket_key} via
+    smart values, so it's passed straight through as agent_params.
     """
     payload = request.get_json(silent=True) or {}
-    print("[pr-merged webhook] payload:")
-    print(json.dumps(payload, indent=2))
+    print(f"[pr-merged webhook] payload: {payload}")
     saved_path = save_payload(payload)
     print(f"  saved payload -> {saved_path}")
+    call_scrape_promoter_agent(payload)
     return jsonify({"status": "received"}), 200
 
 
