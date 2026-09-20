@@ -5,7 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -45,31 +45,6 @@ def save_payload(payload: dict) -> str:
     return path
 
 
-ADF_BLOCK_TYPES = {"paragraph", "heading", "listItem", "codeBlock", "blockquote"}
-
-
-def adf_to_text(node: Any) -> str:
-    """Recursively extract plain text from a Jira ADF (Atlassian Document Format) node."""
-    if isinstance(node, str):
-        return node
-    if not isinstance(node, dict):
-        return ""
-    if node.get("type") == "text":
-        return node.get("text", "")
-    text = "".join(adf_to_text(child) for child in node.get("content", []))
-    if node.get("type") in ADF_BLOCK_TYPES:
-        text += "\n"
-    return text
-
-
-def build_agent_params(issue: dict) -> dict:
-    fields = issue.get("fields", {})
-    summary = fields.get("summary", "") or ""
-    description = adf_to_text(fields.get("description", ""))
-    raw_text = "\n\n".join(part for part in (summary, description) if part).strip()
-    return {"ticket_key": issue.get("key"), "raw_text": raw_text}
-
-
 def get_access_token() -> Optional[str]:
     if not (AUTH_TOKEN_URL and AUTH_CLIENT_ID and AUTH_CLIENT_SECRET):
         return None
@@ -105,13 +80,12 @@ def build_multipart(fields: dict[str, str]) -> tuple[bytes, str]:
     return "\r\n".join(lines).encode("utf-8"), f"multipart/form-data; boundary={boundary}"
 
 
-def call_agent(issue: dict) -> None:
+def call_agent(agent_params: dict) -> None:
     """Trigger the aetherion agent run for this webhook event.
 
     Runs in dry-run mode (logs the request instead of sending it) until
     AGENT_RUN_API_BASE_URL, AGENT_ID and AGENT_NAME are configured.
     """
-    agent_params = build_agent_params(issue)
     fields = {
         "agent_name": AGENT_NAME,
         "id": AGENT_ID,
@@ -187,15 +161,11 @@ def call_scrape_promoter_agent(agent_params: dict) -> None:
 
 
 def handle_webhook(payload: dict) -> None:
-    issue = payload.get("issue", payload if "key" in payload else {})
-    fields = issue.get("fields", {})
-
-    print(f"[webhook] key={issue.get('key')} summary={fields.get('summary')!r}")
-    print(json.dumps(payload, indent=2))
+    print(f"[webhook] payload: {payload}")
     saved_path = save_payload(payload)
     print(f"  saved payload -> {saved_path}")
 
-    call_agent(issue)
+    call_agent(payload)
 
 
 @app.route("/health", methods=["GET"])
