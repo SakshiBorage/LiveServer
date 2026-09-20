@@ -175,7 +175,11 @@ def health():
 
 @app.route("/webhook/jira", methods=["POST"])
 def jira_webhook():
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if payload is None:
+        print(f"[webhook] FAILED TO PARSE JSON. Content-Type={request.content_type!r}")
+        print(f"[webhook] raw body: {request.get_data(as_text=True)!r}")
+        payload = {}
     handle_webhook(payload)
     return jsonify({"status": "received"}), 200
 
