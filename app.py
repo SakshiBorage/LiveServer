@@ -62,10 +62,16 @@ def adf_to_text(node: Any) -> str:
     return text
 
 
-def build_agent_params(issue: dict) -> dict:
+def build_agent_params(payload: dict) -> dict:
+    issue = payload.get("issue", payload if "key" in payload else {})
     fields = issue.get("fields", {})
     summary = fields.get("summary", "") or ""
-    description = adf_to_text(fields.get("description", ""))
+    # New custom body sends description flat (top-level, sibling of "issue");
+    # old full "Issue data" body nests it under issue.fields.description.
+    description_raw = payload.get("description")
+    if description_raw is None:
+        description_raw = fields.get("description", "")
+    description = adf_to_text(description_raw)
     raw_text = "\n\n".join(part for part in (summary, description) if part).strip()
     return {"ticket_key": issue.get("key"), "raw_text": raw_text}
 
@@ -105,13 +111,13 @@ def build_multipart(fields: dict[str, str]) -> tuple[bytes, str]:
     return "\r\n".join(lines).encode("utf-8"), f"multipart/form-data; boundary={boundary}"
 
 
-def call_agent(issue: dict) -> None:
+def call_agent(payload: dict) -> None:
     """Trigger the aetherion agent run for this webhook event.
 
     Runs in dry-run mode (logs the request instead of sending it) until
     AGENT_RUN_API_BASE_URL, AGENT_ID and AGENT_NAME are configured.
     """
-    agent_params = build_agent_params(issue)
+    agent_params = build_agent_params(payload)
     fields = {
         "agent_name": AGENT_NAME,
         "id": AGENT_ID,
@@ -195,7 +201,7 @@ def handle_webhook(payload: dict) -> None:
     saved_path = save_payload(payload)
     print(f"  saved payload -> {saved_path}")
 
-    call_agent(issue)
+    call_agent(payload)
 
 
 @app.route("/health", methods=["GET"])
