@@ -1,11 +1,13 @@
 import hashlib
+import hmac
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -26,15 +28,15 @@ def _env(name: str) -> str:
 
 
 AGENT_RUN_API_BASE_URL = _env("AGENT_RUN_API_BASE_URL")
-AGENT_ID = _env("AGENT_ID")
-AGENT_NAME = _env("AGENT_NAME")
-SCRAPE_PROMOTER_AGENT_ID = _env("SCRAPE_PROMOTER_AGENT_ID")
-SCRAPE_PROMOTER_AGENT_NAME = _env("SCRAPE_PROMOTER_AGENT_NAME")
+ROOT_LENS_AGENT_ID = _env("ROOT_LENS_AGENT_ID")
+ROOT_LENS_AGENT_NAME = _env("ROOT_LENS_AGENT_NAME")
 AUTH_TOKEN_URL = _env("AUTH_TOKEN_URL")
 AUTH_CLIENT_ID = _env("AUTH_CLIENT_ID")
 AUTH_CLIENT_SECRET = _env("AUTH_CLIENT_SECRET")
 AUTH_API_KEY = _env("AUTH_API_KEY")
 AUTH_TENANT_ID = _env("AUTH_TENANT_ID")
+
+SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 
 
 def save_payload(payload: dict) -> str:
@@ -43,31 +45,6 @@ def save_payload(payload: dict) -> str:
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
     return path
-
-
-ADF_BLOCK_TYPES = {"paragraph", "heading", "listItem", "codeBlock", "blockquote"}
-
-
-def adf_to_text(node: Any) -> str:
-    """Recursively extract plain text from a Jira ADF (Atlassian Document Format) node."""
-    if isinstance(node, str):
-        return node
-    if not isinstance(node, dict):
-        return ""
-    if node.get("type") == "text":
-        return node.get("text", "")
-    text = "".join(adf_to_text(child) for child in node.get("content", []))
-    if node.get("type") in ADF_BLOCK_TYPES:
-        text += "\n"
-    return text
-
-
-def build_agent_params(issue: dict) -> dict:
-    fields = issue.get("fields", {})
-    summary = fields.get("summary", "") or ""
-    description = adf_to_text(fields.get("description", ""))
-    raw_text = "\n\n".join(part for part in (summary, description) if part).strip()
-    return {"ticket_key": issue.get("key"), "raw_text": raw_text}
 
 
 def get_access_token() -> Optional[str]:
@@ -105,22 +82,21 @@ def build_multipart(fields: dict[str, str]) -> tuple[bytes, str]:
     return "\r\n".join(lines).encode("utf-8"), f"multipart/form-data; boundary={boundary}"
 
 
-def call_agent(issue: dict) -> None:
-    """Trigger the aetherion agent run for this webhook event.
+def call_root_lens_agent(agent_params: dict) -> None:
+    """Trigger the RootLens agent run for a Slack bot-mention event.
 
     Runs in dry-run mode (logs the request instead of sending it) until
-    AGENT_RUN_API_BASE_URL, AGENT_ID and AGENT_NAME are configured.
+    AGENT_RUN_API_BASE_URL, ROOT_LENS_AGENT_ID and ROOT_LENS_AGENT_NAME are configured.
     """
-    agent_params = build_agent_params(issue)
     fields = {
-        "agent_name": AGENT_NAME,
-        "id": AGENT_ID,
+        "agent_name": ROOT_LENS_AGENT_NAME,
+        "id": ROOT_LENS_AGENT_ID,
         "run_in_sync": "false",
         "agent_params": json.dumps(agent_params),
     }
 
-    if not (AGENT_RUN_API_BASE_URL and AGENT_ID and AGENT_NAME):
-        print("[call_agent] DRY RUN (agent API not configured) — would POST:")
+    if not (AGENT_RUN_API_BASE_URL and ROOT_LENS_AGENT_ID and ROOT_LENS_AGENT_NAME):
+        print("[call_root_lens_agent] DRY RUN (agent API not configured) — would POST:")
         print(f"  url    = <AGENT_RUN_API_BASE_URL>/api/v1/agent/run")
         print(f"  fields = {fields}")
         return
@@ -140,62 +116,26 @@ def call_agent(issue: dict) -> None:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read().decode())
-            print(f"[call_agent] agent run created: {result}")
+            print(f"[call_root_lens_agent] agent run created: {result}")
     except urllib.error.HTTPError as e:
-        print(f"[call_agent] agent_run_api returned {e.code}: {e.read().decode()}")
+        print(f"[call_root_lens_agent] agent_run_api returned {e.code}: {e.read().decode()}")
 
 
-def call_scrape_promoter_agent(agent_params: dict) -> None:
-    """Trigger the ScrapePromoter agent run. Fully separate from call_agent()
-    so the existing /webhook/jira flow is never touched by this addition.
-
-    Runs in dry-run mode (logs the request instead of sending it) until
-    AGENT_RUN_API_BASE_URL, SCRAPE_PROMOTER_AGENT_ID and
-    SCRAPE_PROMOTER_AGENT_NAME are configured.
-    """
-    fields = {
-        "agent_name": SCRAPE_PROMOTER_AGENT_NAME,
-        "id": SCRAPE_PROMOTER_AGENT_ID,
-        "run_in_sync": "false",
-        "agent_params": json.dumps(agent_params),
-    }
-
-    if not (AGENT_RUN_API_BASE_URL and SCRAPE_PROMOTER_AGENT_ID and SCRAPE_PROMOTER_AGENT_NAME):
-        print("[call_scrape_promoter_agent] DRY RUN (agent API not configured) — would POST:")
-        print(f"  url    = <AGENT_RUN_API_BASE_URL>/api/v1/agent/run")
-        print(f"  fields = {fields}")
-        return
-
-    url = f"{AGENT_RUN_API_BASE_URL}/api/v1/agent/run"
-    body, content_type = build_multipart(fields)
-    headers = {"Content-Type": content_type}
-    if AUTH_TENANT_ID:
-        headers["X-Tenant-ID"] = AUTH_TENANT_ID
-    if AUTH_API_KEY:
-        headers["X-API-Key"] = AUTH_API_KEY
-    token = get_access_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    req = urllib.request.Request(url, method="POST", data=body, headers=headers)
+def verify_slack_signature(raw_body: bytes, timestamp: str, signature: str) -> bool:
+    if not SLACK_SIGNING_SECRET:
+        return False
+    if not timestamp or not signature:
+        return False
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read().decode())
-            print(f"[call_scrape_promoter_agent] agent run created: {result}")
-    except urllib.error.HTTPError as e:
-        print(f"[call_scrape_promoter_agent] agent_run_api returned {e.code}: {e.read().decode()}")
-
-
-def handle_webhook(payload: dict) -> None:
-    issue = payload.get("issue", payload if "key" in payload else {})
-    fields = issue.get("fields", {})
-
-    print(f"[webhook] key={issue.get('key')} summary={fields.get('summary')!r}")
-    print(json.dumps(payload, indent=2))
-    saved_path = save_payload(payload)
-    print(f"  saved payload -> {saved_path}")
-
-    call_agent(issue)
+        if abs(time.time() - int(timestamp)) > 300:
+            return False
+    except ValueError:
+        return False
+    sig_basestring = f"v0:{timestamp}:{raw_body.decode('utf-8')}"
+    computed = (
+        "v0=" + hmac.new(SLACK_SIGNING_SECRET.encode(), sig_basestring.encode(), hashlib.sha256).hexdigest()
+    )
+    return hmac.compare_digest(computed, signature)
 
 
 @app.route("/health", methods=["GET"])
@@ -203,28 +143,36 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
-@app.route("/webhook/jira", methods=["POST"])
-def jira_webhook():
-    payload = request.get_json(silent=True)
-    if payload is None:
-        print(f"[webhook] FAILED TO PARSE JSON. Content-Type={request.content_type!r}")
-        print(f"[webhook] raw body: {request.get_data(as_text=True)!r}")
-        payload = {}
-    handle_webhook(payload)
-    return jsonify({"status": "received"}), 200
+@app.route("/webhook/slack", methods=["POST"])
+def slack_webhook():
+    raw_body = request.get_data()
+    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+    signature = request.headers.get("X-Slack-Signature", "")
 
+    if not verify_slack_signature(raw_body, timestamp, signature):
+        print("[slack webhook] invalid signature")
+        return jsonify({"error": "invalid signature"}), 401
 
-@app.route("/webhook/jira/pr-merged", methods=["POST"])
-def jira_pr_merged_webhook():
-    """Jira's Automation body is already {pr_number, url, ticket_key} via
-    smart values, so it's passed straight through as agent_params.
-    """
     payload = request.get_json(silent=True) or {}
-    print(f"[pr-merged webhook] payload: {payload}")
-    saved_path = save_payload(payload)
-    print(f"  saved payload -> {saved_path}")
-    call_scrape_promoter_agent(payload)
-    return jsonify({"status": "received"}), 200
+
+    if payload.get("type") == "url_verification":
+        return jsonify({"challenge": payload.get("challenge")})
+
+    if payload.get("type") == "event_callback":
+        event = payload.get("event", {})
+        print(f"[slack webhook] event_type={event.get('type')} payload={payload}")
+        saved_path = save_payload(payload)
+        print(f"  saved payload -> {saved_path}")
+
+        if event.get("type") == "app_mention":
+            agent_params = {
+                "text": event.get("text", ""),
+                "channel": event.get("channel", ""),
+                "user": event.get("user", ""),
+            }
+            call_root_lens_agent(agent_params)
+
+    return jsonify({"ok": True}), 200
 
 
 if __name__ == "__main__":
